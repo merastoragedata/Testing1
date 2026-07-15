@@ -1,0 +1,1098 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2A4A6B">
+<title>Karjat Protection Settings Portal · 400/220 kV · MSETCL</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/theme.css">
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%232A4A6B'/><path d='M9 7h4v8h6V7h4v18h-4v-7h-6v7H9z' fill='%23C9A84C'/></svg>">
+</head>
+<body>
+
+<div id="wallpaper"></div>
+
+<div id="app">
+  <header class="top">
+    <button class="icon" id="burger" aria-label="Open menu" title="Menu">☰</button>
+    <div class="brand"><b>KARJAT</b><span>400/220 kV · J966</span></div>
+    <div class="spacer"></div>
+    <input class="gsearch" id="gsearch" type="search" placeholder="Search relays, bays…" aria-label="Search">
+    <button class="icon" id="acct" aria-label="Account" title="Account">👤</button>
+  </header>
+
+  <div class="scrim" id="scrim"></div>
+
+  <nav class="side" id="side" aria-label="Main">
+    <div class="sb-head">
+      <b>KARJAT S/S</b>
+      <div>PROTECTION SETTINGS</div>
+    </div>
+    <div id="nav"></div>
+  </nav>
+
+  <main><div id="view"></div></main>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   All application JS, inlined. Built from js/ by build.py — if you edit
+   this block by hand, edit it here; there is no build step to re-run.
+   Classic script, not a module: works from file:// as well as a server.
+   ══════════════════════════════════════════════════════════════════ */
+(function () {
+"use strict";
+
+/* ═══════ config.js ═══════ */
+/* Config. Only genuine CONFIG lives in localStorage — never user data. */
+
+const EXPECTED_CODE_VERSION = '1.0.1';
+
+const DEFAULT_API =
+  'https://script.google.com/macros/s/AKfycbyUi3N86BL-SVuOsKAni5drstGIyw_MNDjNAvsBg4Sr0xFfQtr-H-eJRpWxT-mMe6lL/exec';
+
+const cfg = {
+  get api()  { return localStorage.getItem('kp.api') || DEFAULT_API; },
+  set api(v) { localStorage.setItem('kp.api', v); },
+  get user()  { return localStorage.getItem('kp.user') || 'ashish'; },
+  set user(v) { localStorage.setItem('kp.user', v); },
+  /* Display toggles — the only two things a view-only user may change. */
+  get showSettingMeaning()  { return localStorage.getItem('kp.sm') !== '0'; },
+  set showSettingMeaning(v) { localStorage.setItem('kp.sm', v ? '1' : '0'); },
+  get showValueMeaning()  { return localStorage.getItem('kp.vm') !== '0'; },
+  set showValueMeaning(v) { localStorage.setItem('kp.vm', v ? '1' : '0'); }
+};
+
+/* ═══════ api.js ═══════ */
+class ApiError extends Error {
+  constructor(msg, kind, detail) { super(msg); this.kind = kind; this.detail = detail || ''; }
+}
+
+/**
+ * One call to the backend.
+ *
+ * POST body goes as text/plain ON PURPOSE. application/json triggers a CORS preflight
+ * (OPTIONS), and Apps Script web apps cannot answer preflights — the request dies before
+ * it ever reaches doPost. text/plain keeps it a "simple request". Do not "fix" this.
+ */
+async function call(action, params = {}, { method = 'GET', signal } = {}) {
+  const url = cfg.api;
+  if (!url) throw new ApiError('No backend URL configured.', 'config');
+
+  let res;
+  try {
+    if (method === 'POST') {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action, user: cfg.user, ...params }),
+        signal, redirect: 'follow'
+      });
+    } else {
+      const q = new URLSearchParams({ action, user: cfg.user, ...params });
+      res = await fetch(url + '?' + q, { method: 'GET', signal, redirect: 'follow' });
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    throw new ApiError(
+      'Cannot reach Storage. Check your connection, or that the deployment allows access to "Anyone".',
+      'network', String(e.message || e));
+  }
+
+  const text = await res.text();
+
+  // Access ≠ Anyone → Google serves an HTML sign-in page instead of JSON.
+  if (/^\s*</.test(text)) {
+    throw new ApiError(
+      'Storage returned a sign-in page instead of data. In Apps Script: Deploy → Manage deployments → ' +
+      'Who has access → Anyone.', 'auth', text.slice(0, 160));
+  }
+
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new ApiError('Storage sent a response that is not JSON.', 'parse', text.slice(0, 220)); }
+
+  // Errors that only exist in code you deleted = you are running an old deployment.
+  if (data && data.ok === false && /required$/i.test(String(data.error || '')) && !data.codeVersion) {
+    throw new ApiError(
+      'Your deployed backend is out of date. In Apps Script: Deploy → Manage deployments → ✏️ → ' +
+      'Version: New version → Deploy.', 'stale', data.error);
+  }
+  if (data && data.ok === false) throw new ApiError(data.error || 'Storage rejected the request.', 'server', data.stack);
+  return data;
+}
+
+const get  = (a, p)    => call(a, p, { method: 'GET' });
+const post = (a, p, o) => call(a, p, { method: 'POST', ...o });
+
+/** Health, plus a plain verdict on whether the deployment is current. */
+async function health() {
+  const h = await get('health');
+  h.stale = h.codeVersion !== EXPECTED_CODE_VERSION;
+  h.expected = EXPECTED_CODE_VERSION;
+  return h;
+}
+
+/* ═══════ store.js ═══════ */
+/**
+ * localStorage is a CACHE ONLY. Storage is the source of truth, always.
+ * Nothing is ever authored here. If the cache vanished, you would lose nothing
+ * but a few hundred milliseconds — that is the whole point of this file.
+ */
+const KEY = 'kp.cache.bootstrap';
+const MAX = 4_000_000;              // stay well under the ~5 MB localStorage ceiling
+
+const store = {
+  boot: null,          // bays, relays, profiles, panels, panelItems, sections, cards, users
+  health: null,
+  fromCache: false,
+  syncedAt: null,
+  relayCache: new Map(),
+  listeners: new Set()
+};
+
+const on = fn => { store.listeners.add(fn); return () => store.listeners.delete(fn); };
+const emit = () => store.listeners.forEach(f => f());
+
+function readCache() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return o && o.bays ? o : null;
+  } catch { return null; }
+}
+
+function writeCache(b) {
+  try {
+    const s = JSON.stringify(b);
+    if (s.length > MAX) return;                 // too big to cache is fine; Storage still has it
+    localStorage.setItem(KEY, s);
+  } catch { /* quota — harmless, we just re-fetch next time */ }
+}
+
+/**
+ * Stale-while-revalidate:
+ *   1. paint from cache instantly (if present)
+ *   2. fetch live in the background
+ *   3. repaint, and stamp the freshness badge
+ * You should never be unsure which settings you are looking at.
+ */
+async function boot({ onStale } = {}) {
+  const cached = readCache();
+  if (cached) {
+    store.boot = cached;
+    store.fromCache = true;
+    store.syncedAt = cached.meta?.baselineSyncedAt || null;
+    emit();
+    onStale?.();
+  }
+
+  const h = await get('health');
+  store.health = h;
+  if (!h.dbReady) { store.boot = null; emit(); return { needsReset: true, health: h }; }
+
+  const b = await get('bootstrap');
+  store.boot = b;
+  store.fromCache = false;
+  store.syncedAt = b.meta?.baselineSyncedAt || null;
+  writeCache(b);
+  emit();
+  return { health: h };
+}
+
+async function refresh() {
+  localStorage.removeItem(KEY);
+  store.relayCache.clear();
+  return boot();
+}
+
+/** Relays are read one at a time via their row-span. Cached per session only. */
+async function relay(relayId) {
+  if (store.relayCache.has(relayId)) return store.relayCache.get(relayId);
+  const r = await get('getRelay', { relayId });
+  store.relayCache.set(relayId, r);
+  return r;
+}
+
+const bays        = () => store.boot?.bays || [];
+const relays      = () => store.boot?.relays || [];
+const bay         = id => bays().find(b => String(b.bayId) === String(id));
+const relayMeta   = id => relays().find(r => String(r.relayId) === String(id));
+/** Relays shown on a bay = the ones it owns, plus ICT diff/REF/NDR linked from the other side. */
+const relaysOfBay = id => relays().filter(r => String(r.bayId) === String(id));
+const linkedOfBay = id => relays().filter(r => r.linkedBayId && String(r.linkedBayId) === String(id));
+const panelsOfBay = id => (store.boot?.panels || [])
+  .filter(p => String(p.bayId) === String(id))
+  .sort((a, b) => Number(a.order) - Number(b.order));
+const itemsOfPanel = pid => (store.boot?.panelItems || []).filter(i => i.panelId === pid);
+
+/* ═══════ router.js ═══════ */
+/* Hash router — works on GitHub Pages with no server rewrites, and keeps real history
+   so the browser Back button and the in-page Back button agree. */
+
+const routes = [];
+let current = null;
+
+const route = (re, handler) => routes.push({ re, handler });
+
+function go(path, { replace = false } = {}) {
+  const h = '#' + path.replace(/^#/, '');
+  if (location.hash === h) return render();
+  replace ? history.replaceState({}, '', h) : history.pushState({}, '', h);
+  render();
+}
+
+function back(fallback = '/') {
+  // Real history when there is any; otherwise a sensible parent.
+  if (history.length > 1 && document.referrer !== location.href) history.back();
+  else go(fallback, { replace: true });
+}
+
+function path() { return (location.hash || '#/').slice(1) || '/'; }
+
+async function render() {
+  const p = path();
+  for (const r of routes) {
+    const m = r.re.exec(p);
+    if (m) { current = p; try { await r.handler(...m.slice(1)); } catch (e) { fail(e); } return; }
+  }
+  document.getElementById('view').innerHTML =
+    `<div class="boot"><div class="in"><h1>Page not found</h1>
+     <p class="sub">Nothing lives at <code>${esc(p)}</code>.</p>
+     <button class="btn" onclick="location.hash='#/'">Go to Overview</button></div></div>`;
+}
+
+function fail(e) {
+  console.error(e);
+  document.getElementById('view').innerHTML =
+    `<div class="banner err"><div><b>That page could not load</b>${esc(e.message || e)}</div></div>`;
+}
+
+addEventListener('hashchange', render);
+addEventListener('popstate', render);
+
+/* ── helpers ───────────────────────────────────────────── */
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+
+const fmt = n => Number(n || 0).toLocaleString('en-IN');
+
+function ago(iso) {
+  if (!iso) return 'never';
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  const d = Math.floor(s / 86400);
+  return d === 1 ? 'yesterday' : d + ' days ago';
+}
+
+function crumbs(parts) {
+  // parts: [{label, path}] — last one is the current page and is not a link.
+  const cur = parts[parts.length - 1];
+  const up = parts.length > 1 ? parts[parts.length - 2] : null;
+  return `<div class="crumb">
+    <button class="back" onclick="${up ? `location.hash='#${up.path}'` : 'history.back()'}">← ${esc(up ? up.label : 'Back')}</button>
+    <span class="sep">/</span><span class="cur">${esc(cur.label)}</span>
+  </div>`;
+}
+
+/* Hover-to-reveal tooltip. Works in viewer mode; that is the point of it. */
+let tipEl;
+function initTips() {
+  tipEl = el('<div class="tip"></div>');
+  document.body.appendChild(tipEl);
+  document.addEventListener('mouseover', e => {
+    const t = e.target.closest('[data-tip]');
+    if (!t) return;
+    const kind = t.dataset.tipk || '';
+    tipEl.innerHTML = (kind ? `<span class="k">${esc(kind)}</span>` : '') + esc(t.dataset.tip);
+    tipEl.classList.add('on');
+    move(e);
+  });
+  document.addEventListener('mousemove', e => { if (tipEl.classList.contains('on')) move(e); });
+  document.addEventListener('mouseout', e => {
+    if (e.target.closest('[data-tip]')) tipEl.classList.remove('on');
+  });
+  function move(e) {
+    const r = tipEl.getBoundingClientRect();
+    let x = e.clientX + 14, y = e.clientY + 16;
+    if (x + r.width > innerWidth - 8) x = e.clientX - r.width - 12;
+    if (y + r.height > innerHeight - 8) y = e.clientY - r.height - 12;
+    tipEl.style.left = Math.max(6, x) + 'px';
+    tipEl.style.top = Math.max(6, y) + 'px';
+  }
+}
+
+const spinner = (msg) =>
+  `<div class="boot"><div class="in"><div class="spin"></div><p class="sub">${esc(msg || 'Loading…')}</p></div></div>`;
+
+/* ═══════ wallpaper.js ═══════ */
+/**
+ * A different landscape every day, with zero network cost.
+ *
+ * Photographs would mean hotlinking megabytes you'd re-download in the field on a bad
+ * connection, and a broken image the day the host goes away. This draws the scene instead:
+ * layered ridgelines as an inline SVG, seeded by the day of the year, so it is the same
+ * picture all day on every device you open and a new one tomorrow.
+ */
+
+const PALETTES = [
+  { n: 'misty hills', sky: ['#C9D6DE', '#E4E0D2'], hills: ['#6E8595', '#89A0AC', '#A6BAC2', '#C3D2D6'] },
+  { n: 'lake dusk',   sky: ['#D3C3B4', '#E9DCC6'], hills: ['#5E6E7A', '#7C8B92', '#9DA9AC', '#BFC7C4'] },
+  { n: 'deep forest', sky: ['#C6CFBE', '#E3E4D3'], hills: ['#4F6350', '#697D66', '#87997F', '#A9B79C'] },
+  { n: 'coast',       sky: ['#C2D2D9', '#E6E6DA'], hills: ['#5D7480', '#7B909A', '#9CAEB4', '#BECBCD'] },
+  { n: 'monsoon',     sky: ['#BFC6C8', '#DCDDD3'], hills: ['#556066', '#727C80', '#939C9E', '#B5BCBB'] },
+  { n: 'dry ghats',   sky: ['#D8CBB2', '#EBE2CB'], hills: ['#7A6F55', '#948868', '#AFA283', '#C8BEA2'] },
+  { n: 'first light', sky: ['#D5C7BE', '#EDE3D2'], hills: ['#6B6470', '#877E86', '#A69C9C', '#C4BBB4'] }
+];
+
+const dayOfYear = d => Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 864e5);
+
+/* Small deterministic PRNG so today's ridges are identical everywhere. */
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+function ridge(rand, baseY, amp, W) {
+  const pts = [];
+  for (let x = 0; x <= W; x += W / 14) {
+    pts.push([x, baseY + (rand() - 0.5) * amp]);
+  }
+  let d = `M0,${600} L0,${pts[0][1].toFixed(1)}`;
+  for (let i = 1; i < pts.length; i++) {
+    const [px, py] = pts[i - 1], [x, y] = pts[i], cx = (px + x) / 2;
+    d += ` Q${px.toFixed(1)},${py.toFixed(1)} ${cx.toFixed(1)},${((py + y) / 2).toFixed(1)}`;
+  }
+  return d + ` L${W},${pts[pts.length - 1][1].toFixed(1)} L${W},600 Z`;
+}
+
+function paintWallpaper(date = new Date()) {
+  const doy = dayOfYear(date);
+  const p = PALETTES[doy % PALETTES.length];
+  const rand = rng(doy * 7919 + date.getFullYear());
+  const W = 1440;
+
+  let layers = '';
+  p.hills.forEach((c, i) => {
+    const baseY = 250 + i * 68;
+    layers += `<path d="${ridge(rand, baseY, 120 - i * 22, W)}" fill="${c}" opacity="${(0.95 - i * 0.07).toFixed(2)}"/>`;
+  });
+
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="600" viewBox="0 0 ${W} 600" preserveAspectRatio="xMidYMax slice">
+      <defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${p.sky[0]}"/><stop offset="1" stop-color="${p.sky[1]}"/>
+      </linearGradient></defs>
+      <rect width="${W}" height="600" fill="url(#s)"/>${layers}
+    </svg>`;
+
+  const node = document.getElementById('wallpaper');
+  if (node) node.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  return p.n;
+}
+
+/* ═══════ pages/dashboard.js ═══════ */
+function freshBar() {
+  const s = store.syncedAt;
+  return `<div class="fresh">
+    <span class="badge ${store.fromCache ? 'warn' : 'ok'}"><span class="dot"></span>
+      ${store.fromCache ? 'Showing cached copy' : 'Live from Storage'}</span>
+    <span class="src">Settings loaded ${esc(ago(s))}${s ? ` · ${esc(new Date(s).toLocaleString('en-IN'))}` : ''}</span>
+    <span class="spacer"></span>
+    <button class="btn ghost sm" onclick="window.kpRefresh()">Refresh</button>
+  </div>`;
+}
+
+function dashboard() {
+  const B = bays(), R = relays();
+  const total = Number(store.boot?.meta?.settingsCount || 0);
+  const real = B.filter(b => !b.isPseudo);
+  const placed = B.filter(b => panelsOfBay(b.bayId).length).length;
+  const empty = real.filter(b => !relaysOfBay(b.bayId).length);
+
+  const byKind = {};
+  R.forEach(r => { byKind[r.kind] = (byKind[r.kind] || 0) + 1; });
+
+  document.getElementById('view').innerHTML = `
+    <h1>400 / 220 kV Karjat Substation</h1>
+    <p class="sub">1002 MVA · S/S Code J966 · MSETCL Western Region</p>
+    ${freshBar()}
+    ${total === 0 ? `<div class="banner info"><div><b>Storage has no settings yet</b>
+        The database exists but is empty. <a href="#/sync">Load the 45,593 settings</a>.</div></div>` : ''}
+
+    <div class="grid g4">
+      <div class="stat"><div class="n">${fmt(total)}</div><div class="l">Settings</div></div>
+      <div class="stat"><div class="n">${R.length}</div><div class="l">Relays</div></div>
+      <div class="stat"><div class="n">${real.length}</div><div class="l">Bays</div></div>
+      <div class="stat"><div class="n">${B.filter(b => b.isPseudo).length}</div><div class="l">Bus zones</div></div>
+    </div>
+
+    <div class="grid g2 mt">
+      <div class="card">
+        <h2>Protection by function</h2>
+        <div class="tw"><table><tbody>
+          ${Object.entries(byKind).sort((a, b) => b[1] - a[1]).map(([k, n]) => `
+            <tr><td>${esc(k)}</td><td class="num" style="text-align:right;width:60px"><b>${n}</b></td></tr>`).join('')}
+        </tbody></table></div>
+      </div>
+      <div class="card">
+        <h2>Wants attention</h2>
+        ${empty.length ? `<p class="sub">${empty.length} bays hold no settings files:
+          ${empty.map(b => `<b>${esc(b.code)}</b>`).join(', ')}. Expected — these are future or unequipped bays.</p>` : ''}
+        <p class="sub mb0">CRP layouts drawn: <b>${placed}</b> of ${real.length} bays.
+          ${placed < real.length ? 'Open a bay to place its relays on the panels.' : ''}</p>
+      </div>
+    </div>`;
+}
+
+function bayRegister() {
+  const B = bays();
+  const grp = (title, list) => !list.length ? '' : `
+    <div class="card">
+      <h2>${esc(title)}</h2>
+      <div class="grid g3">${list.map(tile).join('')}</div>
+    </div>`;
+
+  function tile(b) {
+    const own = relaysOfBay(b.bayId), lnk = linkedOfBay(b.bayId);
+    const n = own.length, l = lnk.length;
+    const pan = panelsOfBay(b.bayId).length;
+    return `<button class="tile ${n ? '' : 'empty'}" onclick="location.hash='#/bay/${encodeURIComponent(b.bayId)}'">
+      <div class="t">${esc(b.code)} · ${esc(b.name)}</div>
+      <div class="m">
+        <span>${n ? `${n} relay${n > 1 ? 's' : ''}` : 'no settings files'}</span>
+        ${l ? `<span class="badge gold">+${l} linked</span>` : ''}
+        ${b.bus && b.bus !== '—' ? `<span>${esc(b.bus)}</span>` : ''}
+        ${pan ? `<span class="badge ok"><span class="dot"></span>CRP</span>` : ''}
+      </div></button>`;
+  }
+
+  document.getElementById('view').innerHTML = `
+    ${crumbs([{ label: 'Overview', path: '/' }, { label: 'Bay Register' }])}
+    <h1>Bay Register</h1>
+    <p class="sub">${B.filter(b => !b.isPseudo).length} bays and ${B.filter(b => b.isPseudo).length} bus zones.</p>
+    ${freshBar()}
+    ${[1, 2, 3, 4, 5].map(d => grp(`400 kV · Diameter ${d}`, B.filter(b => b.diameter == d))).join('')}
+    ${grp('400 kV · Spare ICT', B.filter(b => b.bayId === 'SPARE-ICT'))}
+    ${grp('220 kV · Double main bus + transfer bus', B.filter(b => b.voltage === '220kV' && !b.isPseudo))}
+    ${grp('Bus zones', B.filter(b => b.isPseudo))}`;
+}
+
+/* ═══════ pages/bay.js ═══════ */
+const uid = p => p + '-' + Math.random().toString(36).slice(2, 10);
+let edit = false, draft = null;   // draft = {panels, items} while editing
+
+function bayPage(bayId) {
+  bayId = decodeURIComponent(bayId);
+  const b = bay(bayId);
+  if (!b) { document.getElementById('view').innerHTML =
+    `<div class="banner err"><div><b>No such bay</b>${esc(bayId)} is not in Storage.</div></div>`; return; }
+
+  const own = relaysOfBay(bayId), lnk = linkedOfBay(bayId);
+  if (!draft) draft = load(bayId);
+
+  const placedIds = new Set(draft.items.filter(i => i.type === 'relay' && i.refId).map(i => i.refId));
+  const unplaced = own.filter(r => !placedIds.has(r.relayId));
+
+  document.getElementById('view').innerHTML = `
+    ${crumbs([{ label: 'Bay Register', path: '/bays' }, { label: `${b.code} · ${b.name}` }])}
+    <h1>${esc(b.code)} · ${esc(b.name)}</h1>
+    <p class="sub">${esc(b.voltage)} · ${esc(b.scheme)}${b.diameter ? ` · Diameter ${b.diameter} (${esc(b.position)})` : ''}
+      ${b.bus && b.bus !== '—' ? ` · ${esc(b.bus)}` : ''}</p>
+    ${b.notes ? `<div class="banner info"><div>${esc(b.notes)}</div></div>` : ''}
+    ${freshBar()}
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 class="mb0">Control &amp; Relay Panels</h2>
+        <div class="row">
+          ${edit ? `
+            <button class="btn ghost sm" id="addPanel">+ Panel</button>
+            <button class="btn ghost sm" id="addBox">+ Box</button>
+            <button class="btn ghost sm" id="cancel">Cancel</button>
+            <button class="btn gold sm" id="save">Save layout</button>`
+          : `<button class="btn ghost sm" id="editBtn">Edit layout</button>`}
+        </div>
+      </div>
+
+      ${!draft.panels.length ? `
+        <div class="banner warn"><div><b>No panel layout yet</b>
+          This bay's ${own.length} relays haven't been placed. Nothing is assumed about which panel they
+          sit on — press <b>Edit layout</b> and drag them where they physically are.</div></div>` : ''}
+
+      <div class="crp-wrap" id="crp">
+        ${draft.panels.map(panelHtml).join('')}
+      </div>
+
+      ${edit && unplaced.length ? `
+        <div class="tray"><div class="hd">Unplaced — drag onto a panel (${unplaced.length})</div>
+          <div class="chips">${unplaced.map(r =>
+            `<button class="chip" draggable="true" data-relay="${esc(r.relayId)}">${esc(shortName(r))}</button>`).join('')}
+          </div></div>`
+      : unplaced.length ? `<p class="sub mb0" style="margin-top:10px">
+          <span class="badge warn"><span class="dot"></span>${unplaced.length} relay${unplaced.length > 1 ? 's' : ''} not placed</span></p>` : ''}
+    </div>
+
+    <div class="card">
+      <h2>Relays</h2>
+      <div class="grid g3">
+        ${own.map(r => relayTile(r, false)).join('')}
+        ${lnk.map(r => relayTile(r, true)).join('')}
+      </div>
+      ${lnk.length ? `<p class="sub mb0" style="margin-top:10px">
+        Linked relays protect the transformer across both sides. They are filed on the HV bay
+        and shown here too.</p>` : ''}
+    </div>`;
+
+  wire(bayId, b);
+}
+
+function shortName(r) {
+  return String(r.name).replace(/^\d+KV\s*/i, '').replace(/\s*relay$/i, '');
+}
+
+function relayTile(r, linked) {
+  return `<button class="tile" onclick="location.hash='#/relay/${esc(r.relayId)}'">
+    <div class="t">${esc(shortName(r))}</div>
+    <div class="m">
+      <span class="badge neu">${esc(r.kind)}</span>
+      ${r.model ? `<span>${esc(r.model)}</span>` : `<span class="muted">${esc(r.family)}</span>`}
+      <span>${fmt(r.settingsCount)} settings</span>
+      ${linked ? '<span class="badge gold">linked</span>' : ''}
+    </div></button>`;
+}
+
+/* ── panel rendering — millimetres scaled to screen ───────── */
+const PX = 0.17;   // px per mm → an 800×2200 panel lands at ~136×374
+
+function panelHtml(p) {
+  const w = Number(p.widthMM) * PX, h = Number(p.heightMM) * PX;
+  return `<div class="crp" data-panel="${esc(p.panelId)}" style="width:${w}px;height:${h}px">
+    <div class="cap">${esc(p.name)}${p.label ? ` — ${esc(p.label)}` : ''}</div>
+    ${itemsOfPanel_(p.panelId).map(i => itemHtml(i)).join('')}
+  </div>`;
+}
+
+function itemsOfPanel_(pid) { return draft.items.filter(i => i.panelId === pid); }
+
+function itemHtml(i) {
+  const r = i.type === 'relay' && i.refId ? relayMeta(i.refId) : null;
+  const style = `left:${Number(i.x) * PX}px;top:${Number(i.y) * PX}px;` +
+                `width:${Number(i.w) * PX}px;height:${Number(i.h) * PX}px;` +
+                (i.type === 'box' && i.colour ? `background:${esc(i.colour)};` : '') +
+                (i.shape === 'circle' ? 'border-radius:50%;' : '');
+  const label = r ? shortName(r) : (i.label || '');
+  return `<div class="item ${i.type}" data-item="${esc(i.itemId)}" style="${style}"
+     ${edit ? 'draggable="true"' : ''} title="${esc(label)}">
+    <div>${r ? `<span class="k">${esc(r.kind.split(' ')[0])}</span>` : ''}${esc(label)}</div>
+  </div>`;
+}
+
+/* ── state ───────────────────────────────────────────────── */
+function load(bayId) {
+  const panels = panelsOfBay(bayId).map(p => ({ ...p }));
+  const items = panels.flatMap(p => itemsOfPanel(p.panelId).map(i => ({ ...i })));
+  return { bayId, panels, items };
+}
+
+function newPanel(bayId, n) {
+  return { panelId: uid('PN'), bayId, slot: n, name: 'Panel ' + 'ABCDEF'[n - 1],
+           label: '', widthMM: 800, heightMM: 2200, gridMM: 25, order: n, notes: '' };
+}
+
+/* ── interaction ─────────────────────────────────────────── */
+function wire(bayId, b) {
+  const $ = id => document.getElementById(id);
+
+  $('editBtn') && ($('editBtn').onclick = () => {
+    edit = true;
+    if (!draft.panels.length) draft.panels = [newPanel(bayId, 1), newPanel(bayId, 2)];
+    bayPage(bayId);
+  });
+
+  $('cancel') && ($('cancel').onclick = () => { edit = false; draft = load(bayId); bayPage(bayId); });
+
+  $('addPanel') && ($('addPanel').onclick = () => {
+    if (draft.panels.length >= 6) return;
+    draft.panels.push(newPanel(bayId, draft.panels.length + 1));
+    bayPage(bayId);
+  });
+
+  $('addBox') && ($('addBox').onclick = () => {
+    const p = draft.panels[0]; if (!p) return;
+    const label = prompt('Name this box (e.g. Annunciator, TNC switch, Ammeter):', '');
+    if (label === null) return;
+    draft.items.push({ itemId: uid('PI'), panelId: p.panelId, type: 'box', refId: '',
+      label: label || 'Box', x: 60, y: 60, w: 600, h: 160, shape: 'rect',
+      colour: '#FAF3DC', rotation: 0, order: draft.items.length + 1, notes: '' });
+    bayPage(bayId);
+  });
+
+  $('save') && ($('save').onclick = async (ev) => {
+    ev.target.disabled = true; ev.target.textContent = 'Saving…';
+    try {
+      await post('savePanels', { bayId, panels: draft.panels, items: draft.items });
+      // Storage is truth — re-read rather than trusting what we just sent.
+      await refresh();
+      edit = false; draft = null;
+      bayPage(bayId);
+    } catch (e) {
+      ev.target.disabled = false; ev.target.textContent = 'Save layout';
+      alert('Could not save the layout: ' + e.message);
+    }
+  });
+
+  if (!edit) return;
+
+  /* Drag a relay chip from the tray onto a panel. */
+  document.querySelectorAll('.chip[data-relay]').forEach(c => {
+    c.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ relay: c.dataset.relay }));
+    });
+  });
+  /* Drag an already-placed item to reposition it. */
+  document.querySelectorAll('.item[data-item]').forEach(it => {
+    it.addEventListener('dragstart', e => {
+      const r = it.getBoundingClientRect();
+      e.dataTransfer.setData('text/plain', JSON.stringify({
+        item: it.dataset.item, dx: e.clientX - r.left, dy: e.clientY - r.top }));
+    });
+  });
+
+  document.querySelectorAll('.crp[data-panel]').forEach(pn => {
+    pn.addEventListener('dragover', e => e.preventDefault());
+    pn.addEventListener('drop', e => {
+      e.preventDefault();
+      let d; try { d = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+      const box = pn.getBoundingClientRect();
+      const panel = draft.panels.find(p => p.panelId === pn.dataset.panel);
+      const grid = Number(panel.gridMM) || 25;
+      const snap = v => Math.max(0, Math.round(v / grid) * grid);
+
+      if (d.relay) {
+        const x = snap((e.clientX - box.left) / PX - 125);
+        const y = snap((e.clientY - box.top) / PX - 100);
+        draft.items.push({ itemId: uid('PI'), panelId: panel.panelId, type: 'relay',
+          refId: d.relay, label: '', x, y, w: 250, h: 200, shape: 'rect',
+          colour: '', rotation: 0, order: draft.items.length + 1, notes: '' });
+      } else if (d.item) {
+        const it = draft.items.find(i => i.itemId === d.item);
+        if (!it) return;
+        it.panelId = panel.panelId;
+        it.x = snap((e.clientX - box.left - d.dx) / PX);
+        it.y = snap((e.clientY - box.top - d.dy) / PX);
+      }
+      bayPage(bayId);
+    });
+  });
+
+  /* Click a placed item to remove it (edit mode only). */
+  document.querySelectorAll('.item[data-item]').forEach(it => {
+    it.addEventListener('dblclick', () => {
+      draft.items = draft.items.filter(i => i.itemId !== it.dataset.item);
+      bayPage(bayId);
+    });
+  });
+}
+
+function resetBayDraft() { draft = null; edit = false; }
+
+/* ═══════ pages/relay.js ═══════ */
+let data = null, q = '', grp = '';
+let navSeq = 0;   // navigation token — see below
+
+async function relayPage(relayId) {
+  const mine = ++navSeq;
+  const v = document.getElementById('view');
+  v.innerHTML = spinner('Reading settings from Storage…');
+  let d;
+  try { d = await relay(relayId); }
+  catch (e) {
+    if (mine !== navSeq) return;
+    v.innerHTML = `<div class="banner err"><div><b>Could not read this relay</b>${esc(e.message)}</div></div>`;
+    return;
+  }
+  // If you moved on while this was loading, this response is stale — drop it.
+  // Without this, a slow read can paint the PREVIOUS relay's settings under the
+  // CURRENT relay's name. Wrong settings under a trusted heading is the worst
+  // failure this page could have.
+  if (mine !== navSeq) return;
+  data = d;
+  q = ''; grp = '';
+  paint();
+}
+
+function paint() {
+  const r = data.relay, b = bay(r.bayId);
+  const groups = [...new Set(data.settings.map(s => s.groupName))];
+  const withMeaning = data.settings.filter(s => data.meanings.title[s.meaningKey]).length;
+  const applied = data.versions.find(v => v.versionId === data.appliedVersionId);
+
+  document.getElementById('view').innerHTML = `
+    ${crumbs([{ label: b ? `${b.code} · ${b.name}` : 'Bay', path: `/bay/${encodeURIComponent(r.bayId)}` },
+              { label: r.name }])}
+    <h1>${esc(r.name)}</h1>
+    <p class="sub">
+      <span class="badge neu">${esc(r.kind)}</span>
+      ${r.model ? `<span class="badge gold">${esc(r.model)}</span>` : ''}
+      · ${esc(r.family)} · ${fmt(r.settingsCount)} settings · ${groups.length} groups
+      ${applied ? ` · <span class="badge ok"><span class="dot"></span>${esc(applied.tag)} applied</span>` : ''}
+    </p>
+    ${freshBar()}
+
+    <div class="grid g4">
+      <div class="stat"><div class="n">${fmt(r.settingsCount)}</div><div class="l">Settings</div></div>
+      <div class="stat"><div class="n">${groups.length}</div><div class="l">Groups</div></div>
+      <div class="stat"><div class="n">${data.versions.length}</div><div class="l">Versions</div></div>
+      <div class="stat"><div class="n">${Math.round(withMeaning / r.settingsCount * 100)}%</div><div class="l">Have meanings</div></div>
+    </div>
+
+    ${withMeaning === 0 ? `<div class="banner info" style="margin-top:14px"><div>
+      <b>No meanings for this relay yet</b>
+      Meanings are shared by relay model, so importing one file for a
+      ${esc(r.model || r.kind)} covers every relay like it.</div></div>` : ''}
+
+    <div class="card mt">
+      <div class="row" style="justify-content:space-between;margin-bottom:11px">
+        <h2 class="mb0">Settings</h2>
+        <div class="row">
+          <input type="text" id="q" placeholder="Search title, value, meaning…" value="${esc(q)}" style="width:230px">
+          <select id="g">
+            <option value="">All groups (${groups.length})</option>
+            ${groups.map(x => `<option value="${esc(x)}"${grp === x ? ' selected' : ''}>${esc(x)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:10px">
+        <label class="ck"><input type="checkbox" id="sm" ${cfg.showSettingMeaning ? 'checked' : ''}> Setting meaning column</label>
+        <label class="ck"><input type="checkbox" id="vm" ${cfg.showValueMeaning ? 'checked' : ''}> Value meaning column</label>
+        <span class="sub mb0" style="margin-left:auto" id="count"></span>
+      </div>
+      <div class="tw" id="tw"></div>
+    </div>`;
+
+  document.getElementById('q').oninput = e => { q = e.target.value; rows(); };
+  document.getElementById('g').onchange = e => { grp = e.target.value; rows(); };
+  document.getElementById('sm').onchange = e => { cfg.showSettingMeaning = e.target.checked; rows(); };
+  document.getElementById('vm').onchange = e => { cfg.showValueMeaning = e.target.checked; rows(); };
+  rows();
+}
+
+function rows() {
+  const sm = cfg.showSettingMeaning, vm = cfg.showValueMeaning;
+  const ql = q.trim().toLowerCase();
+  const M = data.meanings;
+
+  const list = data.settings.filter(s => {
+    if (grp && s.groupName !== grp) return false;
+    if (!ql) return true;
+    // Match ANYWHERE, across every field the engineer might remember — not just the title prefix.
+    const tm = M.title[s.meaningKey] || '';
+    const vmv = M.value[s.meaningKey + '\u0001' + s.value] || '';
+    return [s.title, s.value, s.groupName, s.unit, s.rangeText, tm, vmv]
+      .some(f => String(f ?? '').toLowerCase().includes(ql));
+  });
+
+  document.getElementById('count').textContent =
+    `${fmt(list.length)} of ${fmt(data.settings.length)}`;
+
+  const cap = 800;
+  const show = list.slice(0, cap);
+
+  document.getElementById('tw').innerHTML = `
+    <table><thead><tr>
+      <th style="width:44px">#</th><th>Group</th><th>Setting</th>
+      ${sm ? '<th>Setting meaning</th>' : ''}
+      <th>Value</th>
+      ${vm ? '<th>Value meaning</th>' : ''}
+      <th>Unit</th><th>Range</th>
+    </tr></thead><tbody>
+      ${show.map(s => {
+        const tm = M.title[s.meaningKey] || '';
+        const vmv = M.value[s.meaningKey + '\u0001' + s.value] || '';
+        // When the column is hidden, the meaning is still reachable on hover — including for
+        // view-only users, who cannot turn the column back on.
+        const tAttr = !sm && tm ? ` class="hm" data-tipk="Setting meaning" data-tip="${esc(tm)}"` : '';
+        const vAttr = !vm && vmv ? ` class="hm" data-tipk="Value meaning" data-tip="${esc(vmv)}"` : '';
+        return `<tr>
+          <td class="num muted">${esc(s.idx)}</td>
+          <td class="muted">${esc(s.groupName)}</td>
+          <td><span${tAttr}>${esc(s.title)}</span></td>
+          ${sm ? `<td class="wrap muted">${esc(tm) || '<span class="muted">—</span>'}</td>` : ''}
+          <td class="val"><span${vAttr}>${esc(s.value)}</span></td>
+          ${vm ? `<td class="wrap muted">${esc(vmv) || '<span class="muted">—</span>'}</td>` : ''}
+          <td class="muted">${esc(s.unit)}</td>
+          <td class="muted num">${esc(s.rangeText)}</td>
+        </tr>`;
+      }).join('')}
+    </tbody></table>
+    ${list.length > cap ? `<div style="padding:9px 11px;font-size:12.5px;color:var(--txt-l);border-top:1px solid var(--bdr)">
+      Showing the first ${fmt(cap)} of ${fmt(list.length)}. Narrow the search or pick a group.</div>` : ''}
+    ${!list.length ? `<div style="padding:22px;text-align:center;color:var(--txt-l)">
+      Nothing matches “${esc(q)}”${grp ? ` in ${esc(grp)}` : ''}.</div>` : ''}`;
+}
+
+/* ═══════ pages/sync.js ═══════ */
+const CHUNK = 4000;
+let running = false;
+
+async function syncPage() {
+  const v = document.getElementById('view');
+  v.innerHTML = `
+    ${crumbs([{ label: 'Overview', path: '/' }, { label: 'Load settings into Storage' }])}
+    <h1>Load settings into Storage</h1>
+    <p class="sub">Reads the 62 parsed WRPC relay files and writes 45,593 settings to Storage.</p>
+
+    <div class="banner warn"><div><b>This replaces the baseline</b>
+      Existing baseline rows are cleared first. Revisions, corrections, cards and panel layouts
+      are stored separately and are not touched.</div></div>
+
+    <div class="card">
+      <div id="st" class="sub mb0">Ready.</div>
+      <div class="bar mt"><i id="pb" style="width:0"></i></div>
+      <div class="row mt">
+        <button class="btn gold" id="run">Start loading</button>
+        <button class="btn ghost" id="chk">Check Storage</button>
+      </div>
+    </div>
+    <div class="card" id="log" style="display:none">
+      <h2>Progress</h2><div id="loglines" style="font-size:12.5px;color:var(--txt-m)"></div>
+    </div>`;
+
+  const st = document.getElementById('st'), pb = document.getElementById('pb');
+  const log = document.getElementById('log'), lines = document.getElementById('loglines');
+  const say = m => { log.style.display = ''; lines.insertAdjacentHTML('afterbegin', `<div>${esc(m)}</div>`); };
+
+  document.getElementById('chk').onclick = async () => {
+    st.textContent = 'Checking…';
+    try {
+      const h = await get('health');
+      st.innerHTML = h.dbReady
+        ? `Storage holds <b>${fmt(h.settingsCount)}</b> settings. Last loaded: ${esc(h.baselineSyncedAt || 'never')}.`
+        : 'No database yet. Run <code>?action=resetDatabase&confirm=KARJAT</code> first — see DEPLOY.md.';
+    } catch (e) { st.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+  };
+
+  document.getElementById('run').onclick = async (ev) => {
+    if (running) return;
+    running = true; ev.target.disabled = true;
+    try {
+      st.textContent = 'Reading baseline file…';
+      const base = await (await fetch('data/baseline.json')).json();
+      say(`Parsed baseline: ${fmt(base.relays.length)} relays, ${fmt(base.settings.length)} settings.`);
+
+      st.textContent = 'Writing bays, relays and versions…';
+      const m = await post('syncChunk', {
+        part: 'meta', bays: base.bays, profiles: base.profiles,
+        relays: base.relays, versions: base.versions
+      });
+      say(`Reference tables written: ${m.bays} bays, ${m.relays} relays, ${m.versions} baseline versions.`);
+
+      const total = base.settings.length;
+      let off = 0, n = 0;
+      while (off < total) {
+        const rows = base.settings.slice(off, off + CHUNK);
+        // Each chunk carries its own offset, so an interrupted load resumes — never restarts.
+        const r = await post('syncChunk', { part: 'settings', rows, offset: off, total });
+        off = r.cursor; n++;
+        const pct = Math.round(off / total * 100);
+        pb.style.width = pct + '%';
+        st.innerHTML = `Writing settings — <b>${fmt(off)}</b> of ${fmt(total)} (${pct}%), chunk ${n}.`;
+      }
+      say(`All ${fmt(total)} settings written in ${n} chunks.`);
+
+      st.textContent = 'Writing meanings…';
+      const t1 = await post('syncChunk', { part: 'meanings', rows: base.meanings, offset: 0 });
+      const t2 = await post('syncChunk', { part: 'valueMeanings', rows: base.valueMeanings, offset: 0 });
+      say(`Meanings written: ${fmt(t1.written)} setting, ${fmt(t2.written)} value.`);
+
+      pb.style.width = '100%';
+      st.innerHTML = `<span style="color:var(--grn)"><b>Done.</b> ${fmt(total)} settings are in Storage and readable from any device.</span>`;
+      await refresh();
+      setTimeout(() => go('/'), 1200);
+    } catch (e) {
+      st.innerHTML = `<span style="color:var(--red)"><b>Stopped:</b> ${esc(e.message)}</span>`;
+      say('Stopped. Press Start again — loading resumes from where it stopped.');
+    } finally { running = false; ev.target.disabled = false; }
+  };
+}
+
+/* ═══════ main.js ═══════ */
+const view = () => document.getElementById('view');
+
+/* ── shell ─────────────────────────────────────────────── */
+const NAV = [
+  { g: 'Substation' },
+  { p: '/',      i: '▦', t: 'Overview' },
+  { p: '/sld',   i: '◈', t: 'Single Line Diagram' },
+  { p: '/bays',  i: '▤', t: 'Bay Register' },
+  { g: 'Data' },
+  { p: '/sync',  i: '↥', t: 'Load settings' },
+  { p: '/admin', i: '⚙', t: 'Admin' }
+];
+
+function shell() {
+  document.getElementById('nav').innerHTML = NAV.map(n =>
+    n.g ? `<div class="grp">${esc(n.g)}</div>`
+        : `<a href="#${n.p}" data-p="${n.p}"><i>${n.i}</i>${esc(n.t)}</a>`).join('');
+
+  const side = document.getElementById('side'), scrim = document.getElementById('scrim');
+  const close = () => { side.classList.remove('on'); scrim.classList.remove('on'); };
+  // Collapsed by default at every width — opens as an overlay.
+  document.getElementById('burger').onclick = () => {
+    side.classList.toggle('on'); scrim.classList.toggle('on');
+  };
+  scrim.onclick = close;
+  side.addEventListener('click', e => { if (e.target.closest('a')) close(); });
+  addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+
+  addEventListener('hashchange', markNav);
+  markNav();
+
+  // Global search + account live in the shell, so they are wired here rather than in a page.
+  document.getElementById('gsearch').addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const q = e.target.value.trim();
+    if (q) go('/bays?q=' + encodeURIComponent(q));
+  });
+  document.getElementById('acct').addEventListener('click', () => go('/admin'));
+}
+
+function markNav() {
+  const p = (location.hash || '#/').slice(1) || '/';
+  document.querySelectorAll('#nav a').forEach(a =>
+    a.classList.toggle('on', a.dataset.p === p || (a.dataset.p !== '/' && p.startsWith(a.dataset.p))));
+}
+
+window.kpRefresh = async () => {
+  view().innerHTML = spinner('Re-reading from Storage…');
+  try { await refresh(); render(); } catch (e) { errScreen(e); }
+};
+
+/* ── error screens ─────────────────────────────────────── */
+function errScreen(e) {
+  const kind = e.kind || 'server';
+  const fix = {
+    stale: `In Apps Script: <b>Deploy → Manage deployments → ✏️ → Version: New version → Deploy</b>.
+            Saving alone keeps serving the old code.`,
+    auth:  `In Apps Script: <b>Deploy → Manage deployments → Who has access → Anyone</b>.`,
+    network: `Check the connection, then try again.`,
+    config: `Set the backend URL on the Admin page.`,
+    parse: `Storage replied with something that isn't data. Usually a half-finished deployment.`
+  }[kind] || 'Open <code>?action=health</code> on your backend URL to see what it says.';
+
+  view().innerHTML = `
+    <div class="boot"><div class="in">
+      <h1>Can't reach Storage</h1>
+      <p class="sub">${esc(e.message)}</p>
+      <div class="banner warn" style="text-align:left"><div><b>Try this</b>${fix}</div></div>
+      ${e.detail ? `<p class="sub"><code>${esc(String(e.detail).slice(0, 200))}</code></p>` : ''}
+      <div class="row" style="justify-content:center">
+        <button class="btn gold" onclick="location.reload()">Try again</button>
+        <button class="btn ghost" onclick="location.hash='#/admin'">Backend settings</button>
+      </div>
+    </div></div>`;
+}
+
+function needsReset(h) {
+  view().innerHTML = `
+    <div class="boot"><div class="in">
+      <h1>No database yet</h1>
+      <p class="sub">The backend is running (code ${esc(h.codeVersion)}) but Storage has no database.</p>
+      <div class="banner info" style="text-align:left"><div>
+        <b>Create it</b>Open this once in a browser tab, then come back:<br>
+        <code>${esc(cfg.api)}?action=resetDatabase&amp;confirm=KARJAT</code></div></div>
+      <button class="btn gold" onclick="location.reload()">I've done that — check again</button>
+    </div></div>`;
+}
+
+/* ── admin (minimal for now) ───────────────────────────── */
+function admin() {
+  const h = store.health || {};
+  view().innerHTML = `
+    <h1>Admin</h1><p class="sub">Backend and display settings.</p>
+    ${h.stale ? `<div class="banner err"><div><b>Deployed backend is out of date</b>
+      It reports <code>${esc(h.codeVersion)}</code>; this portal expects <code>${EXPECTED_CODE_VERSION}</code>.
+      Redeploy as a <b>New version</b>.</div></div>` : ''}
+    <div class="card">
+      <h2>Storage</h2>
+      <div class="tw"><table><tbody>
+        <tr><td>Backend code</td><td class="val">${esc(h.codeVersion || '—')}</td></tr>
+        <tr><td>Portal expects</td><td class="val">${EXPECTED_CODE_VERSION}</td></tr>
+        <tr><td>Database ready</td><td class="val">${h.dbReady ? 'yes' : 'no'}</td></tr>
+        <tr><td>SS_ID pasted into code.gs</td><td class="val">
+          ${h.ssIdConst ? '<span class="badge ok"><span class="dot"></span>yes</span>'
+                        : '<span class="badge warn"><span class="dot"></span>no — every request searches Drive</span>'}</td></tr>
+        <tr><td>Spreadsheet ID</td><td><code>${esc(h.ssId || '—')}</code></td></tr>
+        <tr><td>Settings in Storage</td><td class="val">${Number(h.settingsCount || 0).toLocaleString('en-IN')}</td></tr>
+      </tbody></table></div>
+      ${h.ssId && !h.ssIdConst ? `<div class="banner warn mt"><div><b>Paste this into code.gs to speed the portal up</b>
+        <code>const SS_ID = '${esc(h.ssId)}';</code> — then redeploy as a New version.</div></div>` : ''}
+    </div>
+    <div class="card">
+      <h2>Backend URL</h2>
+      <div class="row">
+        <input type="text" id="api" value="${esc(cfg.api)}" style="flex:1;min-width:240px">
+        <button class="btn" id="saveApi">Save</button>
+      </div>
+      <p class="sub mb0 mt">Your Apps Script <code>/exec</code> URL.</p>
+    </div>
+    <div class="card">
+      <h2>Not built yet</h2>
+      <p class="sub mb0">Users, versions UI, corrections, cards, Overview mirroring, Excel export,
+        File Manager, manuals, interruptions and the SLD are still to come. Listed here so this page
+        doesn't imply more than it does.</p>
+    </div>`;
+  document.getElementById('saveApi').onclick = () => {
+    cfg.api = document.getElementById('api').value.trim(); location.reload();
+  };
+}
+
+function stub(title, note) {
+  view().innerHTML = `<h1>${esc(title)}</h1>
+    <div class="banner info"><div><b>Not built yet</b>${esc(note)}</div></div>
+    <button class="btn ghost" onclick="history.back()">← Back</button>`;
+}
+
+/* ── routes ────────────────────────────────────────────── */
+route(/^\/$/,                () => dashboard());
+route(/^\/bays$/,            () => bayRegister());
+route(/^\/bay\/(.+)$/,       id => { resetBayDraft(); bayPage(id); });
+route(/^\/relay\/(.+)$/,     id => relayPage(id));
+route(/^\/sync$/,            () => syncPage());
+route(/^\/admin$/,           () => admin());
+route(/^\/sld$/,             () => stub('Single Line Diagram',
+  'The two clean diagrams (400 kV one-and-a-half breaker, 220 kV double bus + transfer) are next.'));
+
+/* ── boot ──────────────────────────────────────────────── */
+(async function start() {
+  paintWallpaper();
+  shell();
+  initTips();
+  view().innerHTML = spinner('Connecting to Storage…');
+  try {
+    const r = await boot({ onStale: () => render() });   // paint cache immediately if present
+    if (r.needsReset) return needsReset(r.health);
+    if (r.health?.stale) {
+      document.getElementById('view').insertAdjacentHTML('beforebegin', '');
+      console.warn('Backend code', r.health.codeVersion, '≠ expected', EXPECTED_CODE_VERSION);
+    }
+    render();
+  } catch (e) { errScreen(e); }
+})();
+})();
+</script>
+
+</body>
+</html>
