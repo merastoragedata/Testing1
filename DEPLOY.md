@@ -1,109 +1,76 @@
-# Deploy — Backend (Phase 1)
+# Setup — four steps
 
-You asked me to delete the old database and create the new one. I can't reach
-`script.google.com` from my sandbox, so **the wipe is code you deploy, not something I ran.**
-Five minutes, in this order.
+No URLs to open. No spreadsheet IDs to copy. No checking things in a browser tab.
 
 ---
 
-## 1. Replace the code
+## 1. Put the code in Apps Script
 
-Open your Apps Script project → delete everything in `Code.gs` → paste all of **`code.gs`** → **Save**.
+Open your Apps Script project → select everything in `Code.gs` → delete → paste all of
+**`code.gs`** → **Save** (💾).
 
-## 2. Redeploy as a NEW VERSION ⚠️
+## 2. Create the database — press ▶ Run
 
-**Deploy → Manage deployments → ✏️ (pencil) → Version: `New version` → Deploy.**
+At the top of the editor there's a **function dropdown**. Choose **`setupDatabase`**.
+Press **▶ Run**.
 
-Saving alone keeps serving the old code. This is the trap that cost you hours before.
-Keep the same `/exec` URL — it doesn't change.
+First time only, Google asks for permission: *Review permissions → your account →
+Advanced → Go to (project) → Allow*. That's normal for a script that touches your Drive.
 
-Settings must be: **Execute as `Me`** · **Who has access: `Anyone`**.
-
-## 3. Confirm the deploy actually landed
-
-Open in a browser:
+The black **Execution log** at the bottom should say:
 
 ```
-https://script.google.com/macros/s/AKfycbyUi3N86BL-SVuOsKAni5drstGIyw_MNDjNAvsBg4Sr0xFfQtr-H-eJRpWxT-mMe6lL/exec?action=health
+  ✓ DATABASE CREATED
+  ─────────────────────────────────────
+  Spreadsheet : https://docs.google.com/spreadsheets/d/...
+  Sheets      : 21
+  Code version: 1.0.1
 ```
 
-You want:
+That's the database made. It's **empty on purpose** — the settings go in at step 4.
 
-```json
-{ "ok": true, "codeVersion": "1.0.1", "dbReady": false,
-  "hint": "Run ?action=resetDatabase&confirm=KARJAT" }
-```
+> Re-runnable any time. It trashes the old database and builds a fresh one. The old copy
+> goes to Drive Trash, recoverable for 30 days.
 
-- **`codeVersion` missing or not `1.0.1`** → step 2 didn't take. Redo it. Don't continue.
-- **An HTML sign-in page instead of JSON** → access isn't `Anyone`.
-- `dbReady: false` is correct right now. The database doesn't exist yet.
+## 3. Deploy
 
-## 4. Wipe the old database, create the new one
+**Deploy → Manage deployments → ✏️ (pencil) → Version: `New version` → Deploy**
 
-```
-...exec?action=resetDatabase&confirm=KARJAT&user=ashish
-```
+- **Execute as:** Me
+- **Who has access:** Anyone
 
-This trashes the old `Karjat Portal — Master`, builds a fresh one with 21 sheets, creates
-`Images/ Attachments/ SourceFiles/ Overviews/`, and logs the wipe as the first audit row.
-The old file goes to Drive **Trash — recoverable for 30 days**, not shredded. If you want it
-gone for good, empty Trash yourself.
+⚠️ Saving in step 1 is not deploying. If you skip this, the web address keeps serving your
+**old** code and the portal will misbehave in confusing ways. The portal checks for this and
+says so on the Admin page — you don't have to test it yourself.
 
-Response:
+## 4. Load the settings
 
-```json
-{ "ok": true, "ssId": "1AbC...", "sheets": 21, "trashedOld": 1 }
-```
+Open the portal → **Load settings** → **Start**.
 
-## 5. Paste `ssId` back into the code ⚠️ (this is the performance fix)
+All 45,593 settings are already inside `index.html`; this unpacks them and writes them to
+your spreadsheet in about 12 chunks. If it stops, press Start again — it picks up where it
+left off rather than starting over.
 
-Copy that `ssId`. In `code.gs` line ~30:
-
-```js
-const SS_ID = '1AbC...';     // ← paste it here
-```
-
-**Save → redeploy as New version again.**
-
-Without it, every single request searches your whole Drive by filename before it can do
-anything. That is a large part of why the old portal crawled.
-
-## 6. Verify
-
-```
-...exec?action=health
-```
-→ `dbReady: true`, `ssIdConst: true`, `settingsCount: 0`.
-
-Empty is correct. The 45,593 settings load from the frontend (Phase 2), chunked and resumable.
+Done.
 
 ---
 
-## Endpoints live now
+## Other functions you can ▶ Run
 
-| Action | Purpose |
+| Function | What it does |
 |---|---|
-| `health` | version + readiness. **Check this first, always.** |
-| `resetDatabase` | wipe + recreate (needs `confirm=KARJAT`) |
-| `syncChunk` | resumable bulk load |
-| `bootstrap` | bays/relays/panels/cards — everything except settings |
-| `getRelay` | one relay's settings via row-span |
-| `createVersion` `applyVersion` `deleteVersion` `compareVersions` | versioning |
-| `createCorrection` `listCorrections` | typo corrections (separate layer) |
-| `savePanels` `duplicatePanels` | CRP layouts |
-| `importMeanings` `meaningGaps` | meanings + resumable generation |
-| `saveCards` `saveUser` `deleteUser` | cards, users |
-| `uploadAttachment` `getAttachment` | Drive attachments |
-| `audit` | audit trail |
+| `setupDatabase` | Wipe and rebuild the database from scratch |
+| `checkStatus` | Print code version, spreadsheet, settings count, last load |
+| `clearAllSettings` | Empty the settings but keep the database, revisions and layouts |
 
----
+## If something looks wrong
 
-## If something breaks
-
-| Symptom | Cause |
+| What you see | What it means |
 |---|---|
-| `relayId required` / `blockId required` on a call you didn't make | stale deployment → step 2 |
-| HTML instead of JSON | access ≠ `Anyone` |
-| `Database not found` | run step 4 |
-| Everything slow | `SS_ID` still `''` → step 5 |
-| `Storage busy` | two writes at once. Retry; the lock is working. |
+| Portal says **"No database yet"** | Step 2 hasn't been run |
+| Admin says **backend is out of date** | Step 3 wasn't done as a *New version* |
+| Portal says it got a **sign-in page** | Step 3: Who has access → Anyone |
+| **"Storage busy"** | Two writes at once. Press again — the lock is doing its job. |
+
+Run `checkStatus` and read the log. It reports the code **in the editor** — if that disagrees
+with what the portal reports, step 3 is the answer.
