@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/theme.css">
+<link rel="stylesheet" href="styles.css">
 
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%232A4A6B'/><path d='M9 7h4v8h6V7h4v18h-4v-7h-6v7H9z' fill='%23C9A84C'/></svg>">
 </head>
@@ -53,14 +53,51 @@
 
 const EXPECTED_CODE_VERSION = '1.0.1';
 
+/** The deployment this build ships against. */
 const DEFAULT_API =
-  'https://script.google.com/macros/s/AKfycbyUi3N86BL-SVuOsKAni5drstGIyw_MNDjNAvsBg4Sr0xFfQtr-H-eJRpWxT-mMe6lL/exec';
+  'https://script.google.com/macros/s/AKfycbzDfpwhFWTmd5pgenm9dt3zbgeAXiQMZsjou0LHKTw_Na_Kwi_spU7yKRuJWbp0a_1P/exec';
+
+/**
+ * Deployments that are dead. A saved override pointing at one of these is worse than
+ * useless — it silently beats the new default, and the portal keeps calling a URL that
+ * no longer answers with no obvious cause.
+ */
+const RETIRED_API = [
+  'https://script.google.com/macros/s/AKfycbyUi3N86BL-SVuOsKAni5drstGIyw_MNDjNAvsBg4Sr0xFfQtr-H-eJRpWxT-mMe6lL/exec'
+];
+
+const K_API = 'kp.api';
+const K_PIN = 'kp.api.pinnedTo';   // which default a stored override was chosen against
+
+(function reconcileApi() {
+  try {
+    const stored = localStorage.getItem(K_API);
+    const pinned = localStorage.getItem(K_PIN);
+
+    // A saved URL for a retired deployment is dropped outright.
+    if (stored && RETIRED_API.indexOf(stored) !== -1) localStorage.removeItem(K_API);
+
+    // A saved URL that was only ever a copy of the OLD built-in default isn't a real
+    // choice — it's a leftover. Drop it so a new build's default takes effect.
+    // A URL actually typed by hand is left alone.
+    else if (stored && pinned && stored === pinned && pinned !== DEFAULT_API)
+      localStorage.removeItem(K_API);
+
+    localStorage.setItem(K_PIN, DEFAULT_API);
+  } catch (e) { /* storage disabled — defaults still work */ }
+})();
 
 const cfg = {
-  get api()  { return localStorage.getItem('kp.api') || DEFAULT_API; },
-  set api(v) { localStorage.setItem('kp.api', v); },
+  get api()  { return localStorage.getItem(K_API) || DEFAULT_API; },
+  set api(v) { (v && v !== DEFAULT_API) ? localStorage.setItem(K_API, v) : localStorage.removeItem(K_API); },
+  /** True when a hand-entered URL is overriding what this build shipped with. */
+  get apiIsOverride() { return !!localStorage.getItem(K_API); },
+  get apiDefault() { return DEFAULT_API; },
+  resetApi() { localStorage.removeItem(K_API); },
+
   get user()  { return localStorage.getItem('kp.user') || 'ashish'; },
   set user(v) { localStorage.setItem('kp.user', v); },
+
   /* Display toggles — the only two things a view-only user may change. */
   get showSettingMeaning()  { return localStorage.getItem('kp.sm') !== '0'; },
   set showSettingMeaning(v) { localStorage.setItem('kp.sm', v ? '1' : '0'); },
@@ -1045,8 +1082,16 @@ function admin() {
       <div class="row">
         <input type="text" id="api" value="${esc(cfg.api)}" style="flex:1;min-width:240px">
         <button class="btn" id="saveApi">Save</button>
+        ${cfg.apiIsOverride ? `<button class="btn ghost" id="resetApi">Use built-in</button>` : ''}
       </div>
-      <p class="sub mb0 mt">Your Apps Script <code>/exec</code> URL.</p>
+      <p class="sub mb0 mt">
+        ${cfg.apiIsOverride
+          ? `<span class="badge warn"><span class="dot"></span>Overridden on this device</span>
+             This URL was typed in here and beats the one the app shipped with. Built-in is
+             <code>${esc(cfg.apiDefault.slice(0, 60))}…</code>`
+          : `<span class="badge ok"><span class="dot"></span>Built-in</span>
+             The deployment this build ships against.`}
+      </p>
     </div>
     <div class="card">
       <h2>Not built yet</h2>
@@ -1057,6 +1102,8 @@ function admin() {
   document.getElementById('saveApi').onclick = () => {
     cfg.api = document.getElementById('api').value.trim(); location.reload();
   };
+  const rb = document.getElementById('resetApi');
+  if (rb) rb.onclick = () => { cfg.resetApi(); location.reload(); };
 }
 
 function stub(title, note) {
