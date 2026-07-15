@@ -6,35 +6,29 @@
 ## The app is two files
 
 ```
-index.html     everything — markup + all JS inline   (50 KB)
-styles.css     MSETCL navy/gold                      (16 KB)
+index.html     everything — markup, all JS, and all 45,593 settings   (1.4 MB)
+styles.css     MSETCL navy/gold                                 (16 KB)
 ```
 
 Push to a GitHub repo → Settings → Pages → branch `main`, folder `/ (root)`.
 No build, no bundler, no modules, no JSX transpile.
 
-## Two supporting files that are not the app
+`code.gs` is the third file, but it isn't part of the website — it lives in Apps Script.
+See `DEPLOY.md`.
 
-```
-code.gs             the backend. Lives in Apps Script, not in a web page.  → DEPLOY.md
-data/baseline.json  4.9 MB one-time seed (see below)
-```
+## Where the settings data lives
 
-**Why `baseline.json` is not inlined.** It is read exactly once, when you press
-**Load settings**, to fill Storage. Inlined, `index.html` would go from 50 KB to 5 MB —
-downloaded on every page load, forever, for a file needed once. Kept separate, the portal
-stays 50 KB and only ever fetches it on the sync page.
+Inside `index.html`. All 45,593 settings are gzipped and base64'd into an inert
+`<script type="application/gzip-base64">` tag — 4.87 MB of JSON compressed to 1.33 MB.
+The browser stores it as plain text and never parses it as code. It is decoded exactly
+once, when you press **Load settings**, and never touched again.
 
-After the first sync you could delete it. Keep it: it's how you rebuild the database
-from scratch if you ever need to.
+That's why `index.html` is 1.4 MB rather than 50 KB. The browser caches it, so you pay
+that once. There is no separate data file to misplace.
 
 ## First run
 
-1. Deploy `code.gs` and create the database — `DEPLOY.md`, in order.
-2. Open the portal → **Load settings** → Start. ~12 resumable chunks.
-3. Admin shows the `SS_ID` to paste into `code.gs`. Do it — it's the speed fix.
-
-Backend must report `codeVersion 1.0.1`. Admin says so plainly if it doesn't.
+See `DEPLOY.md` — four steps, no URLs to open.
 
 ## Editing
 
@@ -63,7 +57,7 @@ lists the gaps rather than implying otherwise.
 
 ## Tests (not shipped with the site)
 
-- backend: 50 checks — the real `code.gs` against a simulated Sheets, all 45,593 settings
-- page: 58 checks — the real `index.html` executed in jsdom against the real backend
+- backend: 54 checks — the real `code.gs` against a simulated Sheets, all 45,593 settings
+- page: 63 checks — the real `index.html` executed in jsdom against the real backend
 
 Both green as of this build.
