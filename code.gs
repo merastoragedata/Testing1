@@ -17,9 +17,10 @@ const CODE_VERSION   = '1.0.1';
 const SCHEMA_VERSION = '1.0';
 
 /**
- * ⚡ PASTE YOUR SPREADSHEET ID HERE after the first sync.
- * Leave '' and every request re-searches Drive by filename — that is slow and it is
- * why the old portal crawled. The UI shows this ID on the Admin page after sync.
+ * Leave this as ''. You do NOT need to fill it in.
+ * setupDatabase() records the spreadsheet ID in script properties, and every request
+ * reads it from there — no Drive search, no slowness. This constant only exists as an
+ * override if you ever want to point the backend at a different spreadsheet by hand.
  */
 const SS_ID = '';
 
@@ -51,6 +52,81 @@ const SHEETS = {
   MANUALS:     { name: '_Manuals',         cols: ['manualId','relayKind','family','title','url','source','attachmentId'] },
   CUSTOMCOLS:  { name: '_CustomColumns',   cols: ['colId','scope','scopeId','name','order'] }
 };
+
+// ═══════════════════════════════════════════════════════════════════
+// ▶ RUN THESE FROM THE EDITOR — no URL, no browser profile, no deployment
+//
+//   1. Pick the function name in the toolbar dropdown above
+//   2. Press ▶ Run
+//   3. Read the black Execution log at the bottom
+//
+// The editor already runs as your account, so nothing here depends on which
+// Google account Chrome happens to be signed into.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * ▶ RUN THIS FIRST. Wipes any old database and builds a fresh empty one.
+ * Safe to re-run: it always trashes and rebuilds. The old file goes to Drive
+ * Trash (recoverable for 30 days), not shredded.
+ */
+function setupDatabase() {
+  var r = HANDLERS.resetDatabase({ confirm: RESET_TOKEN, user: 'editor' });
+  // route_() normally stamps ok on the way out over HTTP. Pressing ▶ Run skips the
+  // router entirely, so do it here — otherwise a success looks like a failure.
+  r.ok = r.ok !== false;
+  if (!r.ok) { Logger.log('FAILED: ' + r.error); return r; }
+  Logger.log('');
+  Logger.log('  ✓ DATABASE CREATED');
+  Logger.log('  ─────────────────────────────────────────────');
+  Logger.log('  Spreadsheet : ' + r.url);
+  Logger.log('  Sheets      : ' + r.sheets);
+  Logger.log('  Old copy    : ' + (r.trashedOld ? 'moved to Drive Trash' : 'none found'));
+  Logger.log('  Code version: ' + CODE_VERSION);
+  Logger.log('');
+  Logger.log('  It is EMPTY on purpose. Next:');
+  Logger.log('    1. Deploy > Manage deployments > pencil > New version > Deploy');
+  Logger.log('    2. Open the portal and press "Load settings"');
+  Logger.log('');
+  return r;
+}
+
+/**
+ * ▶ RUN THIS ANY TIME to see what the backend thinks is going on.
+ */
+function checkStatus() {
+  var h = HANDLERS.health({});
+  Logger.log('');
+  Logger.log('  BACKEND STATUS');
+  Logger.log('  ─────────────────────────────────────────────');
+  Logger.log('  Code version   : ' + CODE_VERSION);
+  Logger.log('  Database ready : ' + (h.dbReady ? 'yes' : 'NO  -> run setupDatabase()'));
+  if (h.dbReady) {
+    Logger.log('  Spreadsheet    : ' + h.ssId);
+    Logger.log('  Settings held  : ' + (h.settingsCount || 0));
+    Logger.log('  Last loaded    : ' + (h.baselineSyncedAt || 'never'));
+  }
+  Logger.log('');
+  Logger.log('  NOTE: this reports the code in the EDITOR. The portal talks to the');
+  Logger.log('  deployed copy. If they disagree, redeploy as a New version.');
+  Logger.log('');
+  return h;
+}
+
+/**
+ * ▶ RUN THIS to empty the database without deleting it (keeps the same spreadsheet).
+ */
+function clearAllSettings() {
+  var n = lock_(function () {
+    var s = sh_(SHEETS.SETTINGS), last = s.getLastRow();
+    if (last > 1) s.deleteRows(2, last - 1);
+    meta_('settingsCount', 0);
+    meta_('syncCursor', 0);
+    meta_('baselineSyncedAt', '');
+    bustBootstrap_();
+    return last - 1;
+  });
+  Logger.log('Cleared ' + Math.max(0, n) + ' setting rows. Press "Load settings" in the portal to refill.');
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // ROUTING
